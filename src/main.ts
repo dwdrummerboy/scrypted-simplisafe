@@ -6,6 +6,7 @@
  */
 
 import sdk, {
+    BinarySensor,
     Camera,
     Device,
     DeviceState,
@@ -208,6 +209,12 @@ function buildPlaceholderCameraDetails(
         },
         supportedFeatures: existing?.supportedFeatures ?? {},
     };
+}
+
+function isDoorbellCamera(details: SimplisafeCameraDetails): boolean {
+    const model = (details.model ?? '').toLowerCase();
+    const name = (details.name ?? '').toLowerCase();
+    return model.includes('doorbell') || name.includes('doorbell');
 }
 
 class SimplisafeAuthManager extends EventEmitter {
@@ -889,7 +896,7 @@ class SimplisafeApi extends EventEmitter {
     }
 }
 
-class SimplisafeCamera extends ScryptedDeviceBase implements Camera, VideoCamera, Settings, MotionSensor {
+class SimplisafeCamera extends ScryptedDeviceBase implements Camera, VideoCamera, Settings, MotionSensor, BinarySensor {
     private static instanceRegistry = new Map<string, string>();
     private readonly nativeCameraId: string;
     private readonly api: SimplisafeApi;
@@ -910,6 +917,8 @@ class SimplisafeCamera extends ScryptedDeviceBase implements Camera, VideoCamera
     private readonly motionHoldDurationMs = 5_000;
     motionDetected?: boolean;
     motionDetectedTimestamp?: number;
+    private doorbellResetTimer?: NodeJS.Timeout;
+    private readonly doorbellHoldDurationMs = 5_000;
 
     constructor(
         nativeId: string,
@@ -955,6 +964,10 @@ class SimplisafeCamera extends ScryptedDeviceBase implements Camera, VideoCamera
         if (this.motionResetTimer) {
             clearTimeout(this.motionResetTimer);
             this.motionResetTimer = undefined;
+        }
+        if (this.doorbellResetTimer) {
+            clearTimeout(this.doorbellResetTimer);
+            this.doorbellResetTimer = undefined;
         }
     }
     updateDetails(details: SimplisafeCameraDetails): void {
@@ -1054,6 +1067,21 @@ class SimplisafeCamera extends ScryptedDeviceBase implements Camera, VideoCamera
             this.motionResetTimer = undefined;
             this.motionDetected = false;
         }, this.motionHoldDurationMs);
+    }
+
+    handleDoorbellEvent(event: SimplisafeRealtimeEvent): void {
+        this.logInstanceUsage('doorbellEvent');
+        if (this.getDebug()) {
+            this.console.log(`SimpliSafe doorbell press detected for ${this.nativeCameraId}.`);
+        }
+        this.binaryState = true;
+        if (this.doorbellResetTimer) {
+            clearTimeout(this.doorbellResetTimer);
+        }
+        this.doorbellResetTimer = setTimeout(() => {
+            this.doorbellResetTimer = undefined;
+            this.binaryState = false;
+        }, this.doorbellHoldDurationMs);
     }
 
     async prepareForStreaming(): Promise<boolean> {
@@ -1349,6 +1377,7 @@ class SimplisafePlugin extends ScryptedDeviceBase implements DeviceProvider, Set
         this.api = new SimplisafeApi(this.authManager, this.console, this.debug);
         this.api.setAccountNumber(this.accountNumber);
         this.api.on(EVENT_TYPES.CAMERA_MOTION, event => this.handleCameraMotionEvent(event));
+        this.api.on(EVENT_TYPES.DOORBELL, event => this.handleDoorbellPressEvent(event));
 
         this.loadCachedCameras();
         this.loadCameraReadiness();
@@ -1445,6 +1474,35 @@ class SimplisafePlugin extends ScryptedDeviceBase implements DeviceProvider, Set
         }
     }
 
+    private handleDoorbellPressEvent(event: SimplisafeRealtimeEvent): void {
+        const nativeIds = this.resolveNativeIdsFromEvent(event);
+        if (nativeIds.length === 0) {
+            if (this.debug) {
+                const identifier = event.sensorSerial
+                    || event.cameraSerial
+                    || event.serial
+                    || event.deviceSerial
+                    || event.cameraUuid
+                    || event.uuid;
+                this.console.warn(`SimpliSafe doorbell event could not be matched to a camera. identifier=${identifier ?? 'unknown'}`);
+            }
+            return;
+        }
+
+        for (const nativeId of nativeIds) {
+            void this.dispatchDoorbellEvent(nativeId, event);
+        }
+    }
+
+    private async dispatchDoorbellEvent(nativeId: string, event: SimplisafeRealtimeEvent): Promise<void> {
+        try {
+            const device = this.devices.get(nativeId) ?? await this.getDevice(nativeId);
+            device.handleDoorbellEvent(event);
+        } catch (err) {
+            this.console.warn(`SimpliSafe doorbell event dispatch failed for ${nativeId}.`, err);
+        }
+    }
+
     private async startRealtimeEvents(): Promise<void> {
         if (!this.authManager.hasRefreshToken()) {
             return;
@@ -1524,6 +1582,7 @@ class SimplisafePlugin extends ScryptedDeviceBase implements DeviceProvider, Set
         }
 
         const includeVideoCamera = this.upgradedNativeIds.has(nativeId);
+        const doorbell = isDoorbellCamera(details);
         const interfaces: (ScryptedInterface | string)[] = [
             ScryptedInterface.Camera,
             ScryptedInterface.Settings,
@@ -1531,6 +1590,10 @@ class SimplisafePlugin extends ScryptedDeviceBase implements DeviceProvider, Set
             ScryptedInterface.Online,
             ScryptedInterface.MotionSensor,
         ];
+
+        if (doorbell) {
+            interfaces.push(ScryptedInterface.BinarySensor);
+        }
 
         if (includeVideoCamera) {
             interfaces.push(ScryptedInterface.VideoCamera);
@@ -1542,7 +1605,7 @@ class SimplisafePlugin extends ScryptedDeviceBase implements DeviceProvider, Set
 
         await this.publishCameraMeta(nativeId, {
             name,
-            type: ScryptedDeviceType.Camera,
+            type: doorbell ? ScryptedDeviceType.Doorbell : ScryptedDeviceType.Camera,
             interfaces,
             info: {
                 manufacturer: 'SimpliSafe',
