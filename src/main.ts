@@ -1939,11 +1939,23 @@ class SimplisafePlugin extends ScryptedDeviceBase implements DeviceProvider, Set
 
         const devices: Device[] = [];
         for (const descriptor of this.cachedDescriptors.values()) {
+            const details = this.cameraDetails.get(descriptor.nativeId);
+            const doorbell = details ? isDoorbellCamera(details) : descriptor.type === ScryptedDeviceType.Doorbell;
+            const correctedType = doorbell ? ScryptedDeviceType.Doorbell : ScryptedDeviceType.Camera;
+
+            let interfaces = descriptor.interfaces;
+            if (correctedType !== descriptor.type) {
+                interfaces = interfaces.filter(i => i !== ScryptedInterface.BinarySensor);
+                if (doorbell) {
+                    interfaces = [...interfaces, ScryptedInterface.BinarySensor];
+                }
+            }
+
             devices.push({
                 nativeId: descriptor.nativeId,
                 name: descriptor.name,
-                type: descriptor.type,
-                interfaces: descriptor.interfaces,
+                type: correctedType,
+                interfaces,
                 info: descriptor.info,
             });
         }
