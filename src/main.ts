@@ -211,10 +211,14 @@ function buildPlaceholderCameraDetails(
     };
 }
 
+// Known SimpliSafe doorbell model numbers (case-insensitive exact match).
+// SS002 = Video Doorbell Pro; more may be added as the product line grows.
+const SIMPLISAFE_DOORBELL_MODELS = new Set(['ss002']);
+
 function isDoorbellCamera(details: SimplisafeCameraDetails): boolean {
-    const model = (details.model ?? '').toLowerCase();
+    const model = (details.model ?? '').toLowerCase().trim();
     const name = (details.name ?? '').toLowerCase();
-    return model.includes('doorbell') || name.includes('doorbell');
+    return SIMPLISAFE_DOORBELL_MODELS.has(model) || model.includes('doorbell') || name.includes('doorbell');
 }
 
 class SimplisafeAuthManager extends EventEmitter {
@@ -1565,12 +1569,36 @@ class SimplisafePlugin extends ScryptedDeviceBase implements DeviceProvider, Set
             }
             return;
         }
+
+        // Stage the update in cachedDescriptors before publishing so that when
+        // we call onDevicesChanged we include ALL known cameras in one batch.
+        // onDevicesChanged replaces the plugin's entire child device list, so
+        // passing only the single updated device would erase all other cameras.
+        const previous = this.cachedDescriptors.get(normalized);
+        this.cachedDescriptors.set(normalized, cachedDescriptor);
+
+        const allDevices: Device[] = Array.from(this.cachedDescriptors.values()).map(d => {
+            const dev: Device = {
+                nativeId: d.nativeId,
+                name: d.name,
+                type: d.type,
+                interfaces: d.interfaces,
+            };
+            if (d.info) dev.info = d.info;
+            return dev;
+        });
+
         try {
-            await deviceManager.onDevicesChanged({ devices: [descriptor] });
+            await deviceManager.onDevicesChanged({ devices: allDevices });
             this.lastPublished.set(normalized, key);
-            this.cachedDescriptors.set(normalized, cachedDescriptor);
             this.persistCachedDescriptors();
         } catch (err) {
+            // Revert the staged update so cachedDescriptors stays consistent
+            if (previous) {
+                this.cachedDescriptors.set(normalized, previous);
+            } else {
+                this.cachedDescriptors.delete(normalized);
+            }
             this.console.warn(`Failed to publish SimpliSafe device descriptor for ${normalized}.`, err);
         }
     }
@@ -1598,6 +1626,13 @@ class SimplisafePlugin extends ScryptedDeviceBase implements DeviceProvider, Set
         const name = details.cameraSettings?.cameraName
             || details.name
             || `Camera ${details.uuid ?? nativeId}`;
+
+        this.console.log(
+            `SimpliSafe refreshDeviceDescriptor: ${nativeId} ` +
+            `model=${details.model ?? 'unknown'} name=${details.name ?? 'unknown'} ` +
+            `doorbell=${doorbell} type=${doorbell ? ScryptedDeviceType.Doorbell : ScryptedDeviceType.Camera} ` +
+            `interfaces=[${interfaces.join(', ')}]`
+        );
 
         await this.publishCameraMeta(nativeId, {
             name,
@@ -1943,12 +1978,23 @@ class SimplisafePlugin extends ScryptedDeviceBase implements DeviceProvider, Set
             if (!interfaces.includes(ScryptedInterface.VideoCamera) && !interfaces.includes('VideoCamera')) {
                 interfaces = [...interfaces, ScryptedInterface.VideoCamera];
             }
-            if (correctedType !== descriptor.type) {
-                interfaces = interfaces.filter(i => i !== ScryptedInterface.BinarySensor);
-                if (doorbell) {
-                    interfaces = [...interfaces, ScryptedInterface.BinarySensor];
-                }
+
+            // Always ensure BinarySensor is consistent with doorbell status regardless
+            // of whether the type changed — a cached descriptor could have type=Doorbell
+            // but be missing BinarySensor if it was persisted before BinarySensor was added.
+            const hasBinarySensor = interfaces.some(i => i === ScryptedInterface.BinarySensor || i === 'BinarySensor');
+            if (doorbell && !hasBinarySensor) {
+                interfaces = [...interfaces, ScryptedInterface.BinarySensor];
+            } else if (!doorbell && hasBinarySensor) {
+                interfaces = interfaces.filter(i => i !== ScryptedInterface.BinarySensor && i !== 'BinarySensor');
             }
+
+            this.console.log(
+                `SimpliSafe republishCachedDescriptors: ${descriptor.nativeId} ` +
+                `model=${details?.model ?? 'unknown'} name=${details?.name ?? descriptor.name} ` +
+                `doorbell=${doorbell} type=${correctedType} ` +
+                `interfaces=[${interfaces.join(', ')}]`
+            );
 
             devices.push({
                 nativeId: descriptor.nativeId,
