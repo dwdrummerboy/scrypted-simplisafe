@@ -1627,13 +1627,6 @@ class SimplisafePlugin extends ScryptedDeviceBase implements DeviceProvider, Set
             || details.name
             || `Camera ${details.uuid ?? nativeId}`;
 
-        this.console.log(
-            `SimpliSafe refreshDeviceDescriptor: ${nativeId} ` +
-            `model=${details.model ?? 'unknown'} name=${details.name ?? 'unknown'} ` +
-            `doorbell=${doorbell} type=${doorbell ? ScryptedDeviceType.Doorbell : ScryptedDeviceType.Camera} ` +
-            `interfaces=[${interfaces.join(', ')}]`
-        );
-
         await this.publishCameraMeta(nativeId, {
             name,
             type: doorbell ? ScryptedDeviceType.Doorbell : ScryptedDeviceType.Camera,
@@ -1988,13 +1981,6 @@ class SimplisafePlugin extends ScryptedDeviceBase implements DeviceProvider, Set
             } else if (!doorbell && hasBinarySensor) {
                 interfaces = interfaces.filter(i => i !== ScryptedInterface.BinarySensor && i !== 'BinarySensor');
             }
-
-            this.console.log(
-                `SimpliSafe republishCachedDescriptors: ${descriptor.nativeId} ` +
-                `model=${details?.model ?? 'unknown'} name=${details?.name ?? descriptor.name} ` +
-                `doorbell=${doorbell} type=${correctedType} ` +
-                `interfaces=[${interfaces.join(', ')}]`
-            );
 
             devices.push({
                 nativeId: descriptor.nativeId,
