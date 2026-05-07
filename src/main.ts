@@ -1581,10 +1581,10 @@ class SimplisafePlugin extends ScryptedDeviceBase implements DeviceProvider, Set
             return;
         }
 
-        const includeVideoCamera = this.upgradedNativeIds.has(nativeId);
         const doorbell = isDoorbellCamera(details);
         const interfaces: (ScryptedInterface | string)[] = [
             ScryptedInterface.Camera,
+            ScryptedInterface.VideoCamera,
             ScryptedInterface.Settings,
             RESOLUTION_INTERFACE,
             ScryptedInterface.Online,
@@ -1593,10 +1593,6 @@ class SimplisafePlugin extends ScryptedDeviceBase implements DeviceProvider, Set
 
         if (doorbell) {
             interfaces.push(ScryptedInterface.BinarySensor);
-        }
-
-        if (includeVideoCamera) {
-            interfaces.push(ScryptedInterface.VideoCamera);
         }
 
         const name = details.cameraSettings?.cameraName
@@ -1944,6 +1940,9 @@ class SimplisafePlugin extends ScryptedDeviceBase implements DeviceProvider, Set
             const correctedType = doorbell ? ScryptedDeviceType.Doorbell : ScryptedDeviceType.Camera;
 
             let interfaces = descriptor.interfaces;
+            if (!interfaces.includes(ScryptedInterface.VideoCamera) && !interfaces.includes('VideoCamera')) {
+                interfaces = [...interfaces, ScryptedInterface.VideoCamera];
+            }
             if (correctedType !== descriptor.type) {
                 interfaces = interfaces.filter(i => i !== ScryptedInterface.BinarySensor);
                 if (doorbell) {
