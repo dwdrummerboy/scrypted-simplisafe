@@ -2133,8 +2133,9 @@ class SimplisafePlugin extends ScryptedDeviceBase implements DeviceProvider, Set
         }
         this.lastPublished.delete(normalized);
         this.readinessTasks.delete(normalized);
-        this.cachedDescriptors.delete(normalized);
-        this.persistCachedDescriptors();
+        // Do NOT delete from cachedDescriptors or persist here — Scrypted calls
+        // releaseDevice sequentially during shutdown, so persisting mid-shutdown
+        // would write a partial descriptor list and cause missing cameras on next boot.
         this.pendingRemoval.delete(normalized);
         this.schedulePersistCameraDetails();
     }
